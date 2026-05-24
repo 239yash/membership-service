@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <!--
+        pattern parts:
+          %d{yyyy-MM-dd HH:mm:ss.SSS,Asia/Kolkata}  timestamp in IST
+          [%thread]                                 thread name (eg. nio-8080-exec-3)
+          [traceId=%X{traceId:-}]                   request trace id from the mdc, dash if absent
+          %-5level                                  log level, left-padded
+          %logger{36}                               class name, clipped to 36 chars
+          %msg                                      the actual log message
+          %n                                        newline
+    -->
+    <property name="LOG_PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS,Asia/Kolkata} [%thread] [traceId=%X{traceId:-}] %-5level %logger{36} - %msg%n"/>
+
+    <appender name="stdout" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+            <pattern>${LOG_PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="stdout"/>
+    </root>
+
+    <logger name="com.work.membership_service" level="INFO"/>
+
+</configuration>

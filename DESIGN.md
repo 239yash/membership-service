@@ -110,7 +110,7 @@ OrderService.placeOrder()
    ├─ persist Order  (transaction begins)
    ├─ publishEvent(OrderPlacedEvent)
    └─ transaction commits
-                                     │  AFTER_COMMIT + @Async
+                                     │  AFTER_COMMIT (sync)
                                      ▼
                      TierEvaluationListener
                                      │
@@ -127,7 +127,7 @@ TierEvaluationService.evaluate(userId):
 ```
 
 Key choices:
-- **After-commit + async**: tier eval runs only on durable orders, never blocks the request thread.
+- **After-commit, synchronous**: tier eval runs only on durable orders (never on a transaction that rolls back), inline on the request thread so the caller sees the order response only after the tier is up to date.
 - **Striped lock + @Version**: in-JVM serialization for the same user, plus an optimistic lock as the last-mile guarantee. Two evaluations on the same subscription cannot both silently succeed.
 - **Current order does NOT get the new tier's benefits.** Promotions apply to the *next* order. Matches industry behavior; avoids re-pricing races.
 - **Demotion is handled by a periodic sweep** (`POST /api/v1/admin/tier-sweep`). Effective tier ratchets up on every order; only the sweep can ratchet it back down — and never below the purchased floor.
@@ -140,9 +140,53 @@ States: `ACTIVE` → `PENDING_DOWNGRADE` (on scheduled downgrade) → `ACTIVE` (
 or `ACTIVE` → `CANCELLED_AT_PERIOD_END` → `EXPIRED` (after period end)
 
 Tier changes:
-- **Upgrade** — immediate, **prorated charge** for the remaining days at the new tier's price delta.
+- **Upgrade** — immediate, **prorated charge** for the remaining days at the new tier's price delta. See below.
 - **Downgrade** — takes effect at period end. `scheduled_tier_id` set, status flips to `PENDING_DOWNGRADE`. No refund.
 - **Cancel** — at period end. Benefits stay live until `end_date`; status flips to `EXPIRED` afterwards.
+
+### Proration math (upgrades)
+
+The intuition: **the customer pays the new tier's rate for the days they will actually use the new tier; the days they already paid for at the old rate are credited back.**
+
+Formula in `ProrationCalculator`:
+
+```
+chargeToday = (newPrice − oldPrice) × (daysRemaining / totalDays)
+```
+
+#### Worked example
+
+A user paid ₹2000 for a year of Gold. After 100 days, she upgrades to Platinum, which would cost ₹4000 for a full year. 265 days remain in the period.
+
+Two equivalent views:
+
+**View 1 — credit + new charge (the mental model)**
+- Days 101–365 of unused Gold = `2000 × 265/365 = ₹1452.05` (credit)
+- Days 101–365 of Platinum     = `4000 × 265/365 = ₹2904.11`
+- Charge today = `2904.11 − 1452.05 = ₹1452.05`
+
+**View 2 — delta × fraction remaining (what the code computes)**
+- delta         = `4000 − 2000 = 2000`
+- fraction left = `265 / 365  = 0.7260`
+- Charge today  = `2000 × 0.7260 = ₹1452.05`
+
+Same number — the two terms in View 1 factor out to View 2.
+
+#### Sanity check on total spend
+
+What she pays across the full year:
+- ₹2000 (original Gold subscription, paid up front)
+- ₹1452.05 (proration today)
+- **Total: ₹3452.05**
+
+A hypothetical "bought Platinum from day 1" would have cost ₹4000. The ₹547.95 difference is exactly the cost of 100 days of Gold (`2000 × 100/365`) — the rate she actually paid for the time she was on Gold. Fair.
+
+#### Guard conditions
+
+- `delta ≤ 0` → return zero (caller asked for an "upgrade" to a tier that costs the same or less).
+- `daysRemaining = 0` → return zero (period already over; renewal will charge the new tier next cycle).
+
+Downgrades never enter this function — they're scheduled for period end with zero immediate charge.
 
 ---
 
@@ -167,7 +211,7 @@ value: { tierCode, rank, priceMultiplier, criterionRuleId, ruleTree,
 Three races to defend against:
 1. **Two concurrent tier changes** on the same subscription.
 2. **A tier change racing with a renewal**.
-3. **Async auto-promotion racing with a manual change**.
+3. **Auto-promotion (from one user's order) racing with a manual change on the same subscription**.
 
 Two layers:
 - **Striped lock** — `ConcurrentHashMap<userId, ReentrantLock>` with reference-counted eviction. Serializes within one JVM.
@@ -186,9 +230,9 @@ Two layers:
 | POST | /api/v1/subscriptions | subscribe (planCode + tierCode) |
 | GET  | /api/v1/users/{userId}/subscription | current subscription |
 | GET  | /api/v1/users/{userId}/subscriptions | history with audit events |
-| POST | /api/v1/subscriptions/{id}/change-tier | upgrade or downgrade |
-| POST | /api/v1/subscriptions/{id}/cancel | cancel at period end |
-| POST | /api/v1/users/{userId}/orders | place order, fires async tier eval |
+| POST | /api/v1/subscriptions/{subscriptionId}/change-tier | upgrade or downgrade |
+| POST | /api/v1/subscriptions/{subscriptionId}/cancel | cancel at period end |
+| POST | /api/v1/users/{userId}/orders | place order, triggers tier eval inline |
 | POST | /api/v1/users/{userId}/checkout/preview | apply current tier benefits to a sample cart |
 | POST | /api/v1/admin/criteria | create criterion rule, returns id |
 | POST | /api/v1/admin/benefits | create benefit config, returns id |

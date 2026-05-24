@@ -2,7 +2,9 @@
 
 Tiered subscription membership backend. Plans (Monthly/Quarterly/Yearly) × Tiers (Silver/Gold/Platinum) with configurable eligibility criteria and benefits per tier.
 
-For architecture and design details, see [DESIGN.md](DESIGN.md).
+- Architecture and design: [DESIGN.md](DESIGN.md)
+- Sample user journey: [BUSINESS_WALKTHROUGH.md](BUSINESS_WALKTHROUGH.md)
+- End-to-end curl flow: [TESTING.md](TESTING.md)
 
 ## Stack
 - Java 17 · Spring Boot 4.0.x · Maven · Lombok
@@ -45,6 +47,35 @@ The app boots with:
 - 3 users — Riya (id 100, `EARLY_ADOPTER`), Arjun (id 101), Meera (id 102, `VIP`)
 
 Each tier points at its rule and benefit config via `membership_tier.active_criterion_rule_id` and `active_benefit_config_id`.
+
+## API
+
+All endpoints are under `/api/v1`. Every response is wrapped in:
+```json
+{ "success": true,  "data": { ... }, "error": null }
+{ "success": false, "data": null,    "error": { "code": "...", "message": "...", "fieldErrors": { ... } } }
+```
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET  | `/plans` | list active plans |
+| GET  | `/tiers` | list active tiers with their current benefits and criteria |
+| POST | `/users` | create a user |
+| GET  | `/users/{userId}` | get a user |
+| POST | `/subscriptions` | subscribe `{userId, planCode, tierCode}` |
+| GET  | `/users/{userId}/subscription` | current live subscription |
+| GET  | `/users/{userId}/subscriptions` | history with audit events |
+| POST | `/subscriptions/{subscriptionId}/change-tier` | upgrade (immediate, prorated) or downgrade (scheduled) |
+| POST | `/subscriptions/{subscriptionId}/cancel` | cancel at period end |
+| POST | `/users/{userId}/orders` | place an order; tier eval runs inline after commit |
+| POST | `/users/{userId}/checkout/preview` | apply current tier benefits to a sample cart |
+| POST | `/admin/criteria` | create a criterion rule version, returns id |
+| POST | `/admin/benefits` | create a benefit config version, returns id |
+| POST | `/admin/tiers/{tierCode}/activate-criteria` | flip a tier's active criterion rule |
+| POST | `/admin/tiers/{tierCode}/activate-benefits` | flip a tier's active benefit config |
+| POST | `/admin/tier-sweep` | re-evaluate every live subscription |
+
+Sample request/response shapes are in [TESTING.md](TESTING.md).
 
 ## Changing tier rules or benefits at runtime
 
@@ -90,7 +121,6 @@ src/main/java/com/work/membership_service/
 ├── engine/            criterion engine + benefit engine
 ├── exception/         custom exceptions + GlobalExceptionHandler
 ├── constant/          enums, records
-├── configuration/     spring config (async, redis, jackson)
 ├── event/             application events
 └── concurrency/       striped locking
 
